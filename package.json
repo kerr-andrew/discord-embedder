@@ -1,0 +1,67 @@
+{
+  "name": "discord-embed-previewer",
+  "displayName": "Discord Embed Previewer",
+  "description": "Side-by-side live preview of Discord message/embed JSON",
+  "version": "0.0.1",
+  "publisher": "kerrj-local",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "discordEmbedPreviewer.preview",
+        "title": "Discord Embed Previewer: Show Preview",
+        "icon": "$(preview)"
+      }
+    ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "discordEmbedPreviewContainer",
+          "title": "Discord Embed Preview",
+          "icon": "media/panel-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "discordEmbedPreviewContainer": [
+        {
+          "id": "discordEmbedPreviewer.view",
+          "name": "Discord Embed Preview",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "discordEmbedPreviewer.preview",
+          "when": "resourceLangId == json",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "discordEmbedPreviewer.preview"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

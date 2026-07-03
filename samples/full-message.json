@@ -1,0 +1,31 @@
+{
+  "content": "Heads up <@123456789012345678>, deploy finished! ||no bugs this time||",
+  "username": "Deploy Bot",
+  "avatar_url": "https://cdn.discordapp.com/embed/avatars/0.png",
+  "embeds": [
+    {
+      "author": {
+        "name": "CI Pipeline",
+        "icon_url": "https://cdn.discordapp.com/embed/avatars/1.png"
+      },
+      "title": "Build #482 succeeded",
+      "url": "https://example.com/builds/482",
+      "description": "All **42** tests passed in `2m14s`.\n- *Nice work team!*\n# Test",
+      "color": 5793266,
+      "fields": [
+        { "name": "Branch", "value": "# main", "inline": true },
+        { "name": "Duration", "value": "- 2m 14s", "inline": true },
+        { "name": "Triggered by", "value": "kerrj", "inline": true },
+        { "name": "Notes", "value": "-# No action needed.", "inline": false }
+      ],
+      "thumbnail": {
+        "url": "https://cdn.discordapp.com/embed/avatars/2.png"
+      },
+      "footer": {
+        "text": "losthalls-ci",
+        "icon_url": "https://cdn.discordapp.com/embed/avatars/3.png"
+      },
+      "timestamp": "2026-07-03T12:00:00.000Z"
+    }
+  ]
+}
