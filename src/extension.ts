@@ -139,6 +139,9 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
 </head>
 <body>
 	<div id="app">
+		<div id="toolbar">
+			<button type="button" id="view-only-toggle" title="Hide edit controls and show only how the embed will display">View only</button>
+		</div>
 		<div id="error" class="error-banner" hidden></div>
 		<div id="message-root"></div>
 	</div>

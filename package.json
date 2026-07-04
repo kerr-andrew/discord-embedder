@@ -2,7 +2,7 @@
   "name": "discord-embedder",
   "displayName": "Discord Embedder",
   "description": "Side-by-side live preview and two-way editor for Discord message/embed JSON",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "publisher": "kerrj-local",
   "private": true,
   "engines": {

@@ -3,17 +3,23 @@
 	const vscode = acquireVsCodeApi();
 	const errorEl = /** @type {HTMLElement} */ (document.getElementById('error'));
 	const rootEl = /** @type {HTMLElement} */ (document.getElementById('message-root'));
+	const viewOnlyToggle = /** @type {HTMLButtonElement} */ (document.getElementById('view-only-toggle'));
 
 	/** @type {any} */
 	let model = null;
 	let lastSentText = null;
 	/** @type {ReturnType<typeof setTimeout> | undefined} */
 	let writeDebounceTimer;
+	let viewOnly = false;
+
+	function saveState(/** @type {object} */ partial) {
+		vscode.setState(Object.assign({}, vscode.getState(), partial));
+	}
 
 	window.addEventListener('message', (event) => {
 		const msg = event.data;
 		if (msg && msg.type === 'update') {
-			vscode.setState({ text: msg.text });
+			saveState({ text: msg.text });
 			if (msg.text === lastSentText) {
 				// Echo of our own write round-tripping through the document;
 				// our model/DOM are already correct, so skip re-rendering
@@ -22,17 +28,40 @@
 			}
 			render(msg.text);
 		} else if (msg && msg.type === 'empty') {
-			vscode.setState({ text: null });
+			saveState({ text: null });
 			model = null;
 			renderPlaceholder();
 		}
 	});
 
 	const prevState = vscode.getState();
+	viewOnly = !!(prevState && prevState.viewOnly);
 	if (prevState && prevState.text) {
 		render(prevState.text);
 	} else if (prevState) {
 		renderPlaceholder();
+	}
+	applyViewOnlyState();
+
+	viewOnlyToggle.addEventListener('click', () => {
+		// Commit whatever's mid-edit before hiding the controls that would
+		// otherwise let you keep editing it.
+		const active = document.activeElement;
+		if (active instanceof HTMLElement && rootEl.contains(active)) {
+			active.blur();
+		}
+		viewOnly = !viewOnly;
+		saveState({ viewOnly });
+		applyViewOnlyState();
+	});
+
+	function applyViewOnlyState() {
+		document.body.classList.toggle('view-only', viewOnly);
+		viewOnlyToggle.classList.toggle('active', viewOnly);
+		viewOnlyToggle.textContent = viewOnly ? 'Exit view only' : 'View only';
+		rootEl.querySelectorAll('.editable').forEach((el) => {
+			el.setAttribute('contenteditable', viewOnly ? 'false' : 'true');
+		});
 	}
 
 	rootEl.addEventListener('focusin', onFocusIn);
@@ -71,6 +100,7 @@
 		hideError();
 		model = normalized;
 		rootEl.innerHTML = buildRootHtml(model);
+		applyViewOnlyState();
 	}
 
 	function showError(text) {
@@ -204,6 +234,7 @@
 
 	function rerenderAndSchedule() {
 		rootEl.innerHTML = buildRootHtml(model);
+		applyViewOnlyState();
 		scheduleWrite();
 	}
 
