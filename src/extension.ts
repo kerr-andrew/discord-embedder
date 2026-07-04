@@ -135,7 +135,7 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
 	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https: data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<link href="${styleUri}" rel="stylesheet">
-	<title>Discord Embed Preview</title>
+	<title>Discord Embedder</title>
 </head>
 <body>
 	<div id="app">

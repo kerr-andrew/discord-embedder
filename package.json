@@ -1,7 +1,7 @@
 {
-  "name": "discord-embed-previewer",
-  "displayName": "Discord Embed Previewer",
-  "description": "Side-by-side live preview of Discord message/embed JSON",
+  "name": "discord-embedder",
+  "displayName": "Discord Embedder",
+  "description": "Side-by-side live preview and two-way editor for Discord message/embed JSON",
   "version": "0.0.1",
   "publisher": "kerrj-local",
   "private": true,
@@ -17,7 +17,7 @@
     "commands": [
       {
         "command": "discordEmbedPreviewer.preview",
-        "title": "Discord Embed Previewer: Show Preview",
+        "title": "Discord Embedder: Show Preview",
         "icon": "$(preview)"
       }
     ],
@@ -25,7 +25,7 @@
       "panel": [
         {
           "id": "discordEmbedPreviewContainer",
-          "title": "Discord Embed Preview",
+          "title": "Discord Embedder",
           "icon": "media/panel-icon.svg"
         }
       ]
@@ -34,7 +34,7 @@
       "discordEmbedPreviewContainer": [
         {
           "id": "discordEmbedPreviewer.view",
-          "name": "Discord Embed Preview",
+          "name": "Discord Embedder",
           "type": "webview"
         }
       ]
