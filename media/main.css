@@ -95,6 +95,7 @@ body {
 /* ---- embed ---- */
 
 .embed-wrapper {
+	position: relative;
 	display: flex;
 	max-width: 520px;
 	margin-top: 8px;
@@ -116,18 +117,8 @@ body {
 	flex-direction: column;
 }
 
-.embed-main {
-	display: flex;
-	justify-content: space-between;
-	gap: 16px;
-}
-
 .embed-text {
 	min-width: 0;
-	flex: 1;
-	display: flex;
-	flex-direction: column;
-	gap: 8px;
 }
 
 .embed-author {
@@ -137,7 +128,6 @@ body {
 	font-size: 0.875rem;
 	font-weight: 600;
 	color: #f2f3f5;
-	margin-top: 8px;
 }
 
 .embed-author img {
@@ -153,6 +143,7 @@ body {
 }
 
 .embed-title {
+	margin-top: 8px;
 	font-size: 1rem;
 	font-weight: 600;
 	color: #f2f3f5;
@@ -169,6 +160,7 @@ body {
 }
 
 .embed-description {
+	margin-top: 8px;
 	font-size: 0.875rem;
 	color: #dbdee1;
 	white-space: pre-wrap;
@@ -179,7 +171,12 @@ body {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 8px;
+	margin-top: 8px;
 	font-size: 0.875rem;
+	/* Thumbnail is floated (see .embed-thumbnail) so it only affects the
+	   title/description text above; fields always get the full embed width
+	   regardless of thumbnail height. */
+	clear: both;
 }
 
 .embed-field {
@@ -188,7 +185,14 @@ body {
 }
 
 .embed-field.inline {
-	flex: 1 1 140px;
+	/* flex-basis (not max-width) drives the wrap decision, so it's kept well
+	   under a third of the embed width - each inline field also carries its
+	   own small "add inline field" button (see .field-btn usage in
+	   buildFieldsHtml), which needs a bit of that headroom too. Growth still
+	   fills up to max-width once fields land on the same row together. A
+	   forced full-width divider after every 3rd field in a run (see
+	   buildFieldsHtml) guarantees 3-per-row regardless of this arithmetic. */
+	flex: 1 1 110px;
 	max-width: calc(33.333% - 6px);
 }
 
@@ -210,7 +214,9 @@ body {
 }
 
 .embed-thumbnail {
-	flex-shrink: 0;
+	float: right;
+	margin-left: 8px;
+	margin-bottom: 8px;
 }
 
 .embed-thumbnail img {
@@ -326,4 +332,213 @@ body {
 .embeds-only {
 	display: flex;
 	flex-direction: column;
+}
+
+/* ---- editing ---- */
+
+.editable {
+	outline: none;
+	border-radius: 3px;
+	min-height: 1.2em;
+	cursor: text;
+	margin: -2px -4px;
+	padding: 2px 4px;
+}
+
+.editable:hover {
+	box-shadow: 0 0 0 1px rgba(148, 155, 164, 0.5);
+}
+
+.editable[data-editing='1'] {
+	box-shadow: 0 0 0 1px #5865f2;
+	background: rgba(88, 101, 242, 0.1);
+}
+
+.editable-textarea {
+	display: block;
+	width: 100%;
+	background: transparent;
+	color: inherit;
+	border: none;
+	outline: none;
+	resize: none;
+	overflow: hidden;
+	font: inherit;
+	white-space: pre-wrap;
+	padding: 0;
+	margin: 0;
+}
+
+.placeholder-text {
+	color: #6d6f78;
+	font-style: italic;
+}
+
+.embed-field-name-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px;
+}
+
+.embed-field-name-row .embed-field-name {
+	flex: 1;
+	min-width: 0;
+}
+
+.field-controls {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	flex-shrink: 0;
+}
+
+/* Slightly smaller than the standard .field-btn size to conserve space when
+   stacked vertically beside the field name. */
+.field-controls .field-btn {
+	width: 13px;
+	height: 13px;
+	font-size: 0.65rem;
+}
+
+/* Shared square icon-button look for field/embed controls and the "+" in
+   insert zones. */
+.sq-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	flex-shrink: 0;
+	background: #1e1f22;
+	border-radius: 3px;
+	color: #949ba4;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 0.75rem;
+	line-height: 1;
+}
+
+.field-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	flex-shrink: 0;
+	background: #1e1f22;
+	border: none;
+	border-radius: 3px;
+	color: #949ba4;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 0.75rem;
+	cursor: pointer;
+	padding: 0;
+}
+
+.field-btn:hover {
+	background: #35373c;
+	color: #f2f3f5;
+}
+
+/* Distinct from the toggle-inline button (which can show a similarly
+   line-like glyph) so the destructive action reads clearly at a glance. */
+.field-btn-remove {
+	background: rgba(242, 85, 90, 0.18);
+	color: #f2555a;
+}
+
+.field-btn-remove:hover {
+	background: rgba(242, 85, 90, 0.32);
+	color: #ff7a7e;
+}
+
+/* The small "add inline field" button, glued to the right of each inline
+   field: a single continuous vertical line running the row's full height
+   (align-self:stretch on the button, flex:1 on each .v-sep segment above and
+   below), with the small "+" icon embedded in its middle. It's a direct
+   child of .embed-fields (sibling of the .embed-field boxes). */
+.inline-add-btn {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 2px;
+	align-self: stretch;
+	flex-shrink: 0;
+	background: none;
+	border: none;
+	cursor: pointer;
+	padding: 0;
+	color: #949ba4;
+}
+
+.inline-add-btn:hover {
+	color: #f2f3f5;
+}
+
+.inline-add-btn:hover .sq-btn {
+	background: #35373c;
+	color: #f2f3f5;
+}
+
+.inline-add-btn .v-sep {
+	width: 1px;
+	flex: 1;
+	background: currentColor;
+	opacity: 0.35;
+}
+
+.embed-remove-btn {
+	position: absolute;
+	bottom: 6px;
+	right: 8px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	background: none;
+	border: none;
+	cursor: pointer;
+	color: #f2555a;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 0.7rem;
+}
+
+.embed-remove-btn:hover {
+	color: #ff7a7e;
+}
+
+.insert-zone {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	width: 100%;
+	flex: 1 1 100%;
+	background: none;
+	border: none;
+	color: #949ba4;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 0.7rem;
+	cursor: pointer;
+	opacity: 0.6;
+	height: 18px;
+}
+
+.insert-zone:hover {
+	opacity: 1;
+}
+
+.insert-zone:hover .sq-btn {
+	background: #35373c;
+	color: #f2f3f5;
+}
+
+.insert-zone .h-sep {
+	flex: 1;
+	height: 1px;
+	background: currentColor;
+	opacity: 0.25;
+}
+
+.insert-label {
+	font-style: normal;
 }

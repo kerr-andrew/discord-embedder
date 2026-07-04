@@ -57,7 +57,14 @@ class PreviewViewProvider implements vscode.WebviewViewProvider {
 		};
 		webviewView.webview.html = getWebviewHtml(webviewView.webview, this.extensionUri);
 
+		const messageListener = webviewView.webview.onDidReceiveMessage((msg) => {
+			if (msg && msg.type === 'write') {
+				this.applyWrite(msg.text);
+			}
+		});
+
 		webviewView.onDidDispose(() => {
+			messageListener.dispose();
 			if (this.view === webviewView) {
 				this.view = undefined;
 			}
@@ -99,6 +106,20 @@ class PreviewViewProvider implements vscode.WebviewViewProvider {
 
 	private sendEmpty() {
 		this.view?.webview.postMessage({ type: 'empty' });
+	}
+
+	private async applyWrite(text: string) {
+		if (!this.trackedUri || typeof text !== 'string') {
+			return;
+		}
+		const document = await vscode.workspace.openTextDocument(this.trackedUri);
+		if (document.getText() === text) {
+			return;
+		}
+		const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
+		const edit = new vscode.WorkspaceEdit();
+		edit.replace(document.uri, fullRange, text);
+		await vscode.workspace.applyEdit(edit);
 	}
 }
 
