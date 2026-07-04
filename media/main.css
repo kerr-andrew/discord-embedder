@@ -63,6 +63,22 @@ body.view-only .editable:hover {
 	background: none;
 }
 
+/* Discord itself doesn't show a "Title"/"Add description…"-style hint for
+   an empty optional piece - it just omits it entirely. Hide the hint text,
+   and collapse the whole row/element when that hint was its only content,
+   so view-only mode doesn't leave a blank line/row where it was. */
+body.view-only .placeholder-text {
+	display: none;
+}
+
+body.view-only .embed-title:has(.placeholder-text),
+body.view-only .embed-description:has(.placeholder-text),
+body.view-only .message-content:has(.placeholder-text),
+body.view-only .embed-author:has(.placeholder-text),
+body.view-only .embed-footer:has(.placeholder-text) {
+	display: none;
+}
+
 .error-banner {
 	background: #402225;
 	border: 1px solid #a12d2f;

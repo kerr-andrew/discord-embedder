@@ -283,6 +283,15 @@
 		if (!el || el.dataset.editing === '1') {
 			return;
 		}
+		if (viewOnly) {
+			// contenteditable="false" blocks native typing, but the element is
+			// still tabindex="0" so it can still be focused (click or Tab) and
+			// fire focusin - refuse to enter edit mode (that's what actually
+			// created the nested <textarea> for multiline fields regardless of
+			// contenteditable) and give focus back up immediately.
+			el.blur();
+			return;
+		}
 		el.dataset.editing = '1';
 		const raw = getRaw(model, el.dataset.bind) || '';
 
@@ -296,6 +305,18 @@
 			const textarea = document.createElement('textarea');
 			textarea.className = 'editable-textarea';
 			textarea.value = raw;
+
+			// A <textarea> is a block-level replaced element, so unlike wrapped
+			// text it can't narrow itself to share a line with a float - a
+			// width:100% box that doesn't fit beside the float just gets pushed
+			// below it entirely, leaving a gap where the float still is. Only
+			// the description sits in the same container as the (floated)
+			// thumbnail, so match the width it leaves available there instead
+			// of letting it get pushed down.
+			const embedText = el.closest('.embed-text');
+			const hasThumbnail = embedText && embedText.querySelector(':scope > .embed-thumbnail');
+			textarea.style.width = hasThumbnail ? 'calc(100% - 88px)' : '100%';
+
 			el.innerHTML = '';
 			el.appendChild(textarea);
 			autosizeTextarea(textarea);
@@ -315,6 +336,14 @@
 	function onFocusOut(e) {
 		const el = targetClosest(e, '.editable');
 		if (!el) {
+			return;
+		}
+		if (viewOnly) {
+			// onFocusIn's el.blur() for view-only fires this handler
+			// synchronously, reentrantly, before it returns. Since view-only
+			// never entered edit mode (no textarea created, no raw textContent
+			// swapped in), reading "the current value" here would see empty
+			// content and write that back over the real value - bail instead.
 			return;
 		}
 		// Moving focus from the wrapper into its own nested <textarea> (see
@@ -359,7 +388,7 @@
 
 	function onKeyDown(/** @type {KeyboardEvent} */ e) {
 		const el = targetClosest(e, '.editable');
-		if (!el || e.key !== 'Enter' || el.dataset.multiline === '1') {
+		if (!el || viewOnly || e.key !== 'Enter' || el.dataset.multiline === '1') {
 			return; // multiline: let the native textarea handle Enter itself
 		}
 		e.preventDefault();
@@ -368,7 +397,7 @@
 
 	function onPaste(/** @type {ClipboardEvent} */ e) {
 		const el = targetClosest(e, '.editable');
-		if (!el || el.dataset.multiline === '1') {
+		if (!el || viewOnly || el.dataset.multiline === '1') {
 			return; // textarea paste is already plain-text only, natively
 		}
 		e.preventDefault();
