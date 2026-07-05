@@ -4,6 +4,13 @@
 	const errorEl = /** @type {HTMLElement} */ (document.getElementById('error'));
 	const rootEl = /** @type {HTMLElement} */ (document.getElementById('message-root'));
 	const viewOnlyToggle = /** @type {HTMLButtonElement} */ (document.getElementById('view-only-toggle'));
+	const diffToggle = /** @type {HTMLButtonElement} */ (document.getElementById('diff-toggle'));
+	const diffOptionsEl = /** @type {HTMLElement} */ (document.getElementById('diff-options'));
+	const diffSourceBtns = /** @type {NodeListOf<HTMLButtonElement>} */ (diffOptionsEl.querySelectorAll('.diff-source-btn'));
+	const originalPaneEl = /** @type {HTMLElement} */ (document.getElementById('original-pane'));
+	const originalRootEl = /** @type {HTMLElement} */ (document.getElementById('original-root'));
+	const originalErrorEl = /** @type {HTMLElement} */ (document.getElementById('original-error'));
+	const currentPaneLabelEl = /** @type {HTMLElement} */ (document.getElementById('current-pane-label'));
 
 	/** @type {any} */
 	let model = null;
@@ -11,6 +18,12 @@
 	/** @type {ReturnType<typeof setTimeout> | undefined} */
 	let writeDebounceTimer;
 	let viewOnly = false;
+
+	let diffEnabled = false;
+	let diffSource = 'save'; // 'commit' | 'save'
+	let gitRepoAvailable = false;
+	/** @type {Record<string, {text?: string, error?: string} | null>} */
+	const originalCache = { save: null, commit: null };
 
 	function saveState(/** @type {object} */ partial) {
 		vscode.setState(Object.assign({}, vscode.getState(), partial));
@@ -31,17 +44,45 @@
 			saveState({ text: null });
 			model = null;
 			renderPlaceholder();
+		} else if (msg && msg.type === 'gitStatus') {
+			// gitStatus is (re-)sent exactly once per tracked document (initial
+			// track or switching files) - use it as the signal that any cached
+			// "last commit" content is for the wrong file now and must be
+			// re-fetched rather than shown stale.
+			originalCache.commit = null;
+			gitRepoAvailable = !!msg.isRepo;
+			if (!gitRepoAvailable && diffSource === 'commit') {
+				diffSource = 'save';
+				saveState({ diffSource });
+			}
+			if (diffEnabled) {
+				if (diffSource === 'commit' && gitRepoAvailable) {
+					requestOriginal('commit');
+				}
+				renderOriginal();
+			}
+			updateDiffSourceAvailability();
+		} else if (msg && msg.type === 'originalContent') {
+			if (msg.source === 'save' || msg.source === 'commit') {
+				originalCache[msg.source] = { text: msg.text, error: msg.error };
+				if (diffEnabled && diffSource === msg.source) {
+					renderOriginal();
+				}
+			}
 		}
 	});
 
 	const prevState = vscode.getState();
 	viewOnly = !!(prevState && prevState.viewOnly);
+	diffEnabled = !!(prevState && prevState.diffEnabled);
+	diffSource = (prevState && prevState.diffSource) || 'save';
 	if (prevState && prevState.text) {
 		render(prevState.text);
 	} else if (prevState) {
 		renderPlaceholder();
 	}
 	applyViewOnlyState();
+	applyDiffState();
 
 	viewOnlyToggle.addEventListener('click', () => {
 		// Commit whatever's mid-edit before hiding the controls that would
@@ -55,6 +96,23 @@
 		applyViewOnlyState();
 	});
 
+	diffToggle.addEventListener('click', () => {
+		diffEnabled = !diffEnabled;
+		saveState({ diffEnabled });
+		applyDiffState();
+	});
+
+	diffSourceBtns.forEach((btn) => {
+		btn.addEventListener('click', () => {
+			if (btn.disabled || btn.dataset.source === diffSource) {
+				return;
+			}
+			diffSource = /** @type {string} */ (btn.dataset.source);
+			saveState({ diffSource });
+			applyDiffState();
+		});
+	});
+
 	function applyViewOnlyState() {
 		document.body.classList.toggle('view-only', viewOnly);
 		viewOnlyToggle.classList.toggle('active', viewOnly);
@@ -62,6 +120,83 @@
 		rootEl.querySelectorAll('.editable').forEach((el) => {
 			el.setAttribute('contenteditable', viewOnly ? 'false' : 'true');
 		});
+	}
+
+	function applyDiffState() {
+		diffToggle.classList.toggle('active', diffEnabled);
+		diffToggle.textContent = diffEnabled ? 'Exit diff view' : 'Diff view';
+		diffOptionsEl.hidden = !diffEnabled;
+		originalPaneEl.hidden = !diffEnabled;
+		currentPaneLabelEl.hidden = !diffEnabled;
+		updateDiffSourceAvailability();
+		if (diffEnabled) {
+			requestOriginal(diffSource);
+			renderOriginal();
+		}
+	}
+
+	function updateDiffSourceAvailability() {
+		diffSourceBtns.forEach((btn) => {
+			const isCommit = btn.dataset.source === 'commit';
+			btn.classList.toggle('active', btn.dataset.source === diffSource);
+			btn.disabled = isCommit && !gitRepoAvailable;
+			btn.title = isCommit && !gitRepoAvailable ? 'Not a git repository' : '';
+		});
+	}
+
+	function requestOriginal(/** @type {string} */ source) {
+		vscode.postMessage({ type: 'requestOriginal', source });
+	}
+
+	function renderOriginal() {
+		const entry = originalCache[diffSource];
+		if (!entry) {
+			hideOriginalError();
+			originalRootEl.innerHTML = buildLoadingHtml(diffSource);
+			return;
+		}
+		if (entry.error) {
+			showOriginalError(entry.error);
+			originalRootEl.innerHTML = '';
+			return;
+		}
+		if (!entry.text || !entry.text.trim()) {
+			showOriginalError('Empty file.');
+			originalRootEl.innerHTML = '';
+			return;
+		}
+		let parsed;
+		try {
+			parsed = JSON.parse(entry.text);
+		} catch (e) {
+			showOriginalError('Invalid JSON: ' + e.message);
+			originalRootEl.innerHTML = '';
+			return;
+		}
+		let normalized;
+		try {
+			normalized = normalize(parsed);
+		} catch (e) {
+			showOriginalError(e.message);
+			originalRootEl.innerHTML = '';
+			return;
+		}
+		hideOriginalError();
+		originalRootEl.innerHTML = buildRootHtml(normalized, true);
+	}
+
+	function buildLoadingHtml(/** @type {string} */ source) {
+		const label = source === 'commit' ? 'Fetching last commit embed…' : 'Loading last saved embed…';
+		return `<div class="loading-state"><span class="spinner"></span>${escapeHtml(label)}</div>`;
+	}
+
+	function showOriginalError(/** @type {string} */ text) {
+		originalErrorEl.textContent = text;
+		originalErrorEl.hidden = false;
+	}
+
+	function hideOriginalError() {
+		originalErrorEl.hidden = true;
 	}
 
 	rootEl.addEventListener('focusin', onFocusIn);
@@ -99,7 +234,7 @@
 
 		hideError();
 		model = normalized;
-		rootEl.innerHTML = buildRootHtml(model);
+		rootEl.innerHTML = buildRootHtml(model, false);
 		applyViewOnlyState();
 	}
 
@@ -233,7 +368,7 @@
 	}
 
 	function rerenderAndSchedule() {
-		rootEl.innerHTML = buildRootHtml(model);
+		rootEl.innerHTML = buildRootHtml(model, false);
 		applyViewOnlyState();
 		scheduleWrite();
 	}
@@ -245,10 +380,18 @@
 		const placeholder = opts.placeholder || '';
 		const tag = opts.tag || 'div';
 		const cls = 'editable' + (opts.className ? ' ' + opts.className : '');
-		const multiline = opts.multiline ? ' data-multiline="1"' : '';
-		const linkUrl = opts.linkUrl ? ` data-link-url="${escapeAttr(opts.linkUrl)}"` : '';
 		const raw = typeof rawValue === 'string' ? rawValue : '';
 		const inner = renderPieceInner(mode, raw, placeholder, opts.linkUrl);
+
+		if (opts.readOnly) {
+			// No data-bind/contenteditable/tabindex: this rendering is never
+			// wired to the edit event handlers (those only listen on the
+			// editable "current" pane), so it must not look or behave editable.
+			return `<${tag} class="${cls}" data-mode="${mode}">${inner}</${tag}>`;
+		}
+
+		const multiline = opts.multiline ? ' data-multiline="1"' : '';
+		const linkUrl = opts.linkUrl ? ` data-link-url="${escapeAttr(opts.linkUrl)}"` : '';
 		return `<${tag} class="${cls}" data-bind="${escapeAttr(path)}" data-mode="${mode}" data-placeholder="${escapeAttr(placeholder)}"${multiline}${linkUrl} contenteditable="true" tabindex="0">${inner}</${tag}>`;
 	}
 
@@ -477,9 +620,13 @@
 	}
 
 	// ---- HTML building ----
+	// Every builder below takes a trailing `readOnly` flag used for the diff
+	// view's "original" pane: when set, structural controls (add/remove/
+	// toggle buttons) are omitted entirely and editablePiece() renders plain,
+	// non-editable markup - that pane must never be interactive.
 
-	function buildRootHtml(m) {
-		const embedsHtml = buildEmbedsListHtml(m.embeds);
+	function buildRootHtml(m, readOnly) {
+		const embedsHtml = buildEmbedsListHtml(m.embeds, readOnly);
 
 		if (!m.message) {
 			return `<div class="embeds-only">${embedsHtml}</div>`;
@@ -496,14 +643,16 @@
 			mode: 'plain',
 			placeholder: 'Bot',
 			tag: 'span',
-			className: 'username'
+			className: 'username',
+			readOnly
 		});
 		const contentHtml = editablePiece('message.content', message.content, {
 			mode: 'md-heading',
 			placeholder: 'Add message content…',
 			tag: 'div',
 			className: 'message-content',
-			multiline: true
+			multiline: true,
+			readOnly
 		});
 
 		return `
@@ -521,17 +670,19 @@
 			</div>`;
 	}
 
-	function buildEmbedsListHtml(embeds) {
+	function buildEmbedsListHtml(embeds, readOnly) {
 		const list = Array.isArray(embeds) ? embeds : [];
-		let html = insertZone('add-embed', {}, 0, 'Add embed');
+		let html = readOnly ? '' : insertZone('add-embed', {}, 0, 'Add embed');
 		list.forEach((embed, i) => {
-			html += buildEmbedHtml(embed, i);
-			html += insertZone('add-embed', {}, i + 1, 'Add embed');
+			html += buildEmbedHtml(embed, i, readOnly);
+			if (!readOnly) {
+				html += insertZone('add-embed', {}, i + 1, 'Add embed');
+			}
 		});
 		return html;
 	}
 
-	function buildEmbedHtml(embed, embedIndex) {
+	function buildEmbedHtml(embed, embedIndex, readOnly) {
 		if (!embed || typeof embed !== 'object') {
 			embed = {};
 		}
@@ -539,27 +690,33 @@
 		const colorHex = typeof embed.color === 'number' ? intToHex(embed.color) : null;
 		const colorBar = colorHex ? `<div class="embed-color-bar" style="background:${colorHex}"></div>` : '';
 
-		const authorHtml = buildAuthorHtml(embedIndex, embed.author);
+		const authorHtml = buildAuthorHtml(embedIndex, embed.author, readOnly);
 		const titleHtml = editablePiece(`embed.${embedIndex}.title`, embed.title, {
 			mode: 'plain',
 			placeholder: 'Title',
 			className: 'embed-title',
-			linkUrl: safeUrl(embed.url)
+			linkUrl: safeUrl(embed.url),
+			readOnly
 		});
 		const descriptionHtml = editablePiece(`embed.${embedIndex}.description`, embed.description, {
 			mode: 'md-heading',
 			placeholder: 'Add description…',
 			className: 'embed-description',
-			multiline: true
+			multiline: true,
+			readOnly
 		});
-		const fieldsHtml = buildFieldsHtml(embedIndex, embed.fields);
+		const fieldsHtml = buildFieldsHtml(embedIndex, embed.fields, readOnly);
 		const thumbnailHtml = buildThumbnailHtml(embed.thumbnail);
 		const imageHtml = buildImageHtml(embed.image);
-		const footerHtml = buildFooterHtml(embedIndex, embed.footer, embed.timestamp);
+		const footerHtml = buildFooterHtml(embedIndex, embed.footer, embed.timestamp, readOnly);
+
+		const removeBtnHtml = readOnly
+			? ''
+			: `<button type="button" class="embed-remove-btn" data-action="remove-embed" data-embed-index="${embedIndex}" title="Remove embed"><span class="field-btn field-btn-remove">-</span><span class="insert-label">Remove embed</span></button>`;
 
 		return `
 			<div class="embed-wrapper">
-				<button type="button" class="embed-remove-btn" data-action="remove-embed" data-embed-index="${embedIndex}" title="Remove embed"><span class="field-btn field-btn-remove">-</span><span class="insert-label">Remove embed</span></button>
+				${removeBtnHtml}
 				${colorBar}
 				<div class="embed-content">
 					<div class="embed-text">
@@ -575,7 +732,7 @@
 			</div>`;
 	}
 
-	function buildAuthorHtml(embedIndex, author) {
+	function buildAuthorHtml(embedIndex, author, readOnly) {
 		const iconUrl = author && safeUrl(author.icon_url);
 		const icon = iconUrl ? `<img src="${escapeAttr(iconUrl)}">` : '';
 		const nameHtml = editablePiece(`embed.${embedIndex}.author.name`, author && author.name, {
@@ -583,7 +740,8 @@
 			placeholder: 'Author name',
 			tag: 'span',
 			className: 'embed-author-name',
-			linkUrl: author && safeUrl(author.url)
+			linkUrl: author && safeUrl(author.url),
+			readOnly
 		});
 		return `<div class="embed-author">${icon}${nameHtml}</div>`;
 	}
@@ -591,12 +749,15 @@
 	// Field name/value intentionally use mode 'md' (no headings) - Discord does
 	// not render "#"/"##"/"###" headings inside embed fields, but it does render
 	// lists ("- ") and subtext ("-# ") there, same as everywhere else.
-	function buildFieldsHtml(embedIndex, fields) {
+	function buildFieldsHtml(embedIndex, fields, readOnly) {
 		const list = Array.isArray(fields) ? fields : [];
-		let html = insertZone('add-field', { 'embed-index': embedIndex }, 0, 'Add field');
+		let html = readOnly ? '' : insertZone('add-field', { 'embed-index': embedIndex }, 0, 'Add field');
 		let inlineRun = 0;
 		list.forEach((f, j) => {
-			html += buildFieldHtml(embedIndex, j, f);
+			html += buildFieldHtml(embedIndex, j, f, readOnly);
+			if (readOnly) {
+				return;
+			}
 			const isInline = !!(f && f.inline);
 			const isLast = j === list.length - 1;
 			const nextIsInline = !isLast && !!(list[j + 1] && list[j + 1].inline);
@@ -626,28 +787,33 @@
 		return `<div class="embed-fields">${html}</div>`;
 	}
 
-	function buildFieldHtml(embedIndex, fieldIndex, f) {
+	function buildFieldHtml(embedIndex, fieldIndex, f, readOnly) {
 		const isInline = !!(f && f.inline);
 		const cls = isInline ? 'inline' : 'block';
 		const toggleGlyph = isInline ? '—' : '||';
 		const nameHtml = editablePiece(`embed.${embedIndex}.field.${fieldIndex}.name`, f && f.name, {
 			mode: 'md',
 			placeholder: 'Field name',
-			className: 'embed-field-name'
+			className: 'embed-field-name',
+			readOnly
 		});
 		const valueHtml = editablePiece(`embed.${embedIndex}.field.${fieldIndex}.value`, f && f.value, {
 			mode: 'md',
 			placeholder: 'Field value',
 			className: 'embed-field-value',
-			multiline: true
+			multiline: true,
+			readOnly
 		});
+		const controlsHtml = readOnly
+			? ''
+			: `<div class="field-controls">
+					<button type="button" class="field-btn" data-action="toggle-inline" data-embed-index="${embedIndex}" data-field-index="${fieldIndex}" title="Toggle inline">${toggleGlyph}</button>
+					<button type="button" class="field-btn field-btn-remove" data-action="remove-field" data-embed-index="${embedIndex}" data-field-index="${fieldIndex}" title="Remove field">-</button>
+				</div>`;
 		return `
 			<div class="embed-field ${cls}">
 				<div class="embed-field-name-row">
-					<div class="field-controls">
-						<button type="button" class="field-btn" data-action="toggle-inline" data-embed-index="${embedIndex}" data-field-index="${fieldIndex}" title="Toggle inline">${toggleGlyph}</button>
-						<button type="button" class="field-btn field-btn-remove" data-action="remove-field" data-embed-index="${embedIndex}" data-field-index="${fieldIndex}" title="Remove field">-</button>
-					</div>
+					${controlsHtml}
 					${nameHtml}
 				</div>
 				${valueHtml}
@@ -670,14 +836,15 @@
 		return `<div class="embed-image"><img src="${escapeAttr(url)}"></div>`;
 	}
 
-	function buildFooterHtml(embedIndex, footer, timestamp) {
+	function buildFooterHtml(embedIndex, footer, timestamp, readOnly) {
 		const iconUrl = footer && safeUrl(footer.icon_url);
 		const icon = iconUrl ? `<img src="${escapeAttr(iconUrl)}">` : '';
 		const textHtml = editablePiece(`embed.${embedIndex}.footer.text`, footer && footer.text, {
 			mode: 'plain',
 			placeholder: 'Footer text',
 			tag: 'span',
-			className: 'embed-footer-text'
+			className: 'embed-footer-text',
+			readOnly
 		});
 		const ts = formatTimestamp(timestamp);
 		const tsHtml = ts ? `<span class="embed-footer-timestamp">${footer && footer.text ? ' • ' : ''}${escapeHtml(ts)}</span>` : '';
