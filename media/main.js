@@ -725,10 +725,58 @@
 		}
 
 		hideError();
+		// A file-content update (our own write echoing back, or a genuine
+		// external edit) can arrive while a field is still being actively
+		// typed into. Rebuilding rootEl wholesale would destroy that
+		// <textarea> mid-edit - and worse, removing the focused element
+		// triggers the browser's own blur/focusout cascade at an unreliable
+		// point in that removal, so relying on the normal onFocusOut commit
+		// path here sometimes captures the in-progress text and sometimes
+		// silently drops it. Capture it ourselves before the rebuild and
+		// restore edit mode after, so it survives regardless.
+		const activeEdit = captureActiveEdit();
+		if (activeEdit) {
+			setRaw(normalized, activeEdit.path, activeEdit.raw);
+		}
 		model = normalized;
 		rootEl.innerHTML = buildRootHtml(model, false);
 		applyViewOnlyState();
 		applyDiffHighlight();
+		restoreActiveEdit(activeEdit);
+	}
+
+	function captureActiveEdit() {
+		const el = /** @type {HTMLElement | null} */ (rootEl.querySelector('.editable[data-editing="1"]'));
+		if (!el) {
+			return null;
+		}
+		if (el.dataset.multiline === '1') {
+			const textarea = /** @type {HTMLTextAreaElement | null} */ (el.querySelector('textarea.editable-textarea'));
+			return {
+				path: el.dataset.bind,
+				raw: textarea ? textarea.value : '',
+				selectionStart: textarea ? textarea.selectionStart : null,
+				selectionEnd: textarea ? textarea.selectionEnd : null
+			};
+		}
+		return { path: el.dataset.bind, raw: el.textContent || '', selectionStart: null, selectionEnd: null };
+	}
+
+	function restoreActiveEdit(captured) {
+		if (!captured) {
+			return;
+		}
+		const el = /** @type {HTMLElement | null} */ (rootEl.querySelector(`.editable[data-bind="${captured.path}"]`));
+		if (!el) {
+			return; // the field this was for no longer exists in the new content
+		}
+		enterEditMode(el, captured.raw);
+		if (captured.selectionStart !== null) {
+			const textarea = /** @type {HTMLTextAreaElement | null} */ (el.querySelector('textarea.editable-textarea'));
+			if (textarea) {
+				textarea.setSelectionRange(captured.selectionStart, captured.selectionEnd);
+			}
+		}
 	}
 
 	function showError(text) {
@@ -861,9 +909,11 @@
 	}
 
 	function rerenderAndSchedule() {
+		const activeEdit = captureActiveEdit();
 		rootEl.innerHTML = buildRootHtml(model, false);
 		applyViewOnlyState();
 		applyDiffHighlight();
+		restoreActiveEdit(activeEdit);
 		scheduleWrite();
 	}
 
@@ -939,16 +989,19 @@
 			el.blur();
 			return;
 		}
+		enterEditMode(el, getRaw(model, el.dataset.bind) || '');
+	}
+
+	// Deliberately not toggling the wrapper's contenteditable attribute:
+	// changing it on an element that currently has focus can trigger an
+	// immediate synchronous blur in some browsers, re-entering onFocusOut
+	// before the textarea even exists below. A <textarea> manages its own
+	// editing state independently of an ancestor's contenteditable, so
+	// there's no need to touch it at all.
+	function enterEditMode(/** @type {HTMLElement} */ el, /** @type {string} */ raw) {
 		el.dataset.editing = '1';
-		const raw = getRaw(model, el.dataset.bind) || '';
 
 		if (el.dataset.multiline === '1') {
-			// Deliberately not toggling the wrapper's contenteditable attribute:
-			// changing it on an element that currently has focus can trigger an
-			// immediate synchronous blur in some browsers, re-entering
-			// onFocusOut before the textarea even exists below. A <textarea>
-			// manages its own editing state independently of an ancestor's
-			// contenteditable, so there's no need to touch it at all.
 			const textarea = document.createElement('textarea');
 			textarea.className = 'editable-textarea';
 			textarea.value = raw;
