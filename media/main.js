@@ -7,6 +7,7 @@
 	const diffToggle = /** @type {HTMLButtonElement} */ (document.getElementById('diff-toggle'));
 	const diffOptionsEl = /** @type {HTMLElement} */ (document.getElementById('diff-options'));
 	const diffSourceBtns = /** @type {NodeListOf<HTMLButtonElement>} */ (diffOptionsEl.querySelectorAll('.diff-source-btn'));
+	const diffHighlightToggle = /** @type {HTMLButtonElement} */ (document.getElementById('diff-highlight-toggle'));
 	const originalPaneEl = /** @type {HTMLElement} */ (document.getElementById('original-pane'));
 	const originalRootEl = /** @type {HTMLElement} */ (document.getElementById('original-root'));
 	const originalErrorEl = /** @type {HTMLElement} */ (document.getElementById('original-error'));
@@ -21,9 +22,12 @@
 
 	let diffEnabled = false;
 	let diffSource = 'save'; // 'commit' | 'save'
+	let diffHighlightEnabled = false;
 	let gitRepoAvailable = false;
 	/** @type {Record<string, {text?: string, error?: string} | null>} */
 	const originalCache = { save: null, commit: null };
+	/** @type {any} */
+	let originalModel = null;
 
 	function saveState(/** @type {object} */ partial) {
 		vscode.setState(Object.assign({}, vscode.getState(), partial));
@@ -76,6 +80,7 @@
 	viewOnly = !!(prevState && prevState.viewOnly);
 	diffEnabled = !!(prevState && prevState.diffEnabled);
 	diffSource = (prevState && prevState.diffSource) || 'save';
+	diffHighlightEnabled = !!(prevState && prevState.diffHighlightEnabled);
 	if (prevState && prevState.text) {
 		render(prevState.text);
 	} else if (prevState) {
@@ -113,6 +118,13 @@
 		});
 	});
 
+	diffHighlightToggle.addEventListener('click', () => {
+		diffHighlightEnabled = !diffHighlightEnabled;
+		saveState({ diffHighlightEnabled });
+		applyDiffHighlightToggleState();
+		applyDiffHighlight();
+	});
+
 	function applyViewOnlyState() {
 		document.body.classList.toggle('view-only', viewOnly);
 		viewOnlyToggle.classList.toggle('active', viewOnly);
@@ -129,10 +141,376 @@
 		originalPaneEl.hidden = !diffEnabled;
 		currentPaneLabelEl.hidden = !diffEnabled;
 		updateDiffSourceAvailability();
+		applyDiffHighlightToggleState();
 		if (diffEnabled) {
 			requestOriginal(diffSource);
 			renderOriginal();
+		} else {
+			applyDiffHighlight();
 		}
+	}
+
+	function applyDiffHighlightToggleState() {
+		diffHighlightToggle.classList.toggle('active', diffHighlightEnabled);
+	}
+
+	// ---- diff highlighting ----
+	//
+	// Two embeds/fields at the same array index aren't necessarily "the same
+	// slot" - removing one field shifts every later field's index, which would
+	// otherwise make them all look modified. alignArrays() fixes that with a
+	// two-pass match against the *other* model's list:
+	//   1. exact (deep-equal) matches, found via LCS - these are untouched
+	//      items and anchor the alignment regardless of any shift around them.
+	//   2. within the gaps between anchors, a looser identity check (field
+	//      name / embed title) pairs up "same slot, edited" items as
+	//      'modified' so their contents get a word-level diff instead of a
+	//      wholesale remove+add.
+	// Anything left over after both passes is a genuine whole-item add/remove.
+	function applyDiffHighlight() {
+		clearDiffHighlights();
+
+		if (!diffEnabled || !diffHighlightEnabled || !model || !originalModel) {
+			return;
+		}
+
+		const currentPaths = getDiffPathMap(rootEl);
+		const originalPaths = getDiffPathMap(originalRootEl);
+
+		diffLeafText('message.username', 'message.username', currentPaths, originalPaths);
+		diffLeafText('message.content', 'message.content', currentPaths, originalPaths);
+
+		const embedOps = alignArrays(originalModel.embeds || [], model.embeds || [], deepEqual, embedIdentity);
+		embedOps.forEach((op) => {
+			if (op.type === 'removed') {
+				markDiffUnit(originalRootEl, `embed.${op.oldIndex}`, 'diff-unit-removed');
+				return;
+			}
+			if (op.type === 'added') {
+				markDiffUnit(rootEl, `embed.${op.newIndex}`, 'diff-unit-added');
+				return;
+			}
+			if (op.type !== 'modified') {
+				return; // 'equal': untouched, nothing to highlight
+			}
+
+			const oldI = op.oldIndex;
+			const newI = op.newIndex;
+			diffLeafText(`embed.${oldI}.title`, `embed.${newI}.title`, currentPaths, originalPaths);
+			diffLeafText(`embed.${oldI}.description`, `embed.${newI}.description`, currentPaths, originalPaths);
+			diffLeafText(`embed.${oldI}.author.name`, `embed.${newI}.author.name`, currentPaths, originalPaths);
+			diffLeafText(`embed.${oldI}.footer.text`, `embed.${newI}.footer.text`, currentPaths, originalPaths);
+
+			const oldFields = (originalModel.embeds[oldI] && originalModel.embeds[oldI].fields) || [];
+			const newFields = (model.embeds[newI] && model.embeds[newI].fields) || [];
+			const fieldOps = alignArrays(oldFields, newFields, deepEqual, fieldIdentity);
+			fieldOps.forEach((fop) => {
+				if (fop.type === 'removed') {
+					markDiffUnit(originalRootEl, `embed.${oldI}.field.${fop.oldIndex}`, 'diff-unit-removed');
+				} else if (fop.type === 'added') {
+					markDiffUnit(rootEl, `embed.${newI}.field.${fop.newIndex}`, 'diff-unit-added');
+				} else if (fop.type === 'modified') {
+					diffLeafText(`embed.${oldI}.field.${fop.oldIndex}.name`, `embed.${newI}.field.${fop.newIndex}.name`, currentPaths, originalPaths);
+					diffLeafText(`embed.${oldI}.field.${fop.oldIndex}.value`, `embed.${newI}.field.${fop.newIndex}.value`, currentPaths, originalPaths);
+				}
+			});
+		});
+	}
+
+	// Undoes both kinds of mutation applyDiffHighlight() makes - the
+	// word-diffed innerHTML of leaf pieces and the whole-unit background
+	// classes - so re-running it from scratch never leaves stale markup from
+	// a previous model state behind (e.g. a field that used to be "modified"
+	// but is now identical again).
+	function clearDiffHighlights() {
+		resetLeafPieces(rootEl, model);
+		resetLeafPieces(originalRootEl, originalModel);
+		rootEl.querySelectorAll('.diff-unit-added').forEach((el) => el.classList.remove('diff-unit-added'));
+		originalRootEl.querySelectorAll('.diff-unit-removed').forEach((el) => el.classList.remove('diff-unit-removed'));
+	}
+
+	function resetLeafPieces(/** @type {HTMLElement} */ container, ownerModel) {
+		if (!ownerModel) {
+			return;
+		}
+		container.querySelectorAll('[data-diff-path]').forEach((el) => {
+			const piece = /** @type {HTMLElement} */ (el);
+			if (piece.dataset.editing === '1') {
+				return; // don't clobber an in-progress edit
+			}
+			const raw = getRaw(ownerModel, piece.dataset.diffPath) || '';
+			renderEditablePieceInPlace(piece, raw);
+		});
+	}
+
+	function getDiffPathMap(/** @type {HTMLElement} */ container) {
+		const map = new Map();
+		container.querySelectorAll('[data-diff-path]').forEach((el) => {
+			map.set(/** @type {HTMLElement} */ (el).dataset.diffPath, el);
+		});
+		return map;
+	}
+
+	function markDiffUnit(/** @type {HTMLElement} */ container, /** @type {string} */ unitPath, /** @type {string} */ cssClass) {
+		const el = container.querySelector(`[data-diff-unit="${unitPath}"]`);
+		if (el) {
+			el.classList.add(cssClass);
+		}
+	}
+
+	// Renders a word-level diff of the value at a path into whichever side(s)
+	// actually have it: oldPath only exists while there's original text to
+	// mark red, newPath only while there's current text to mark green. A
+	// value that only exists on one side (pure add/remove of a still-existing
+	// field's text) degenerates naturally to "every token is a diff" on that
+	// side, so no separate case is needed for it.
+	function diffLeafText(oldPath, newPath, currentPaths, originalPaths) {
+		const oldRaw = getRaw(originalModel, oldPath) || '';
+		const newRaw = getRaw(model, newPath) || '';
+		if (oldRaw === newRaw) {
+			return;
+		}
+		const ops = diffTokens(tokenize(oldRaw), tokenize(newRaw));
+		if (oldRaw) {
+			const oldEl = originalPaths.get(oldPath);
+			if (oldEl && oldEl.dataset.editing !== '1') {
+				oldEl.innerHTML = renderDiffedInner(oldEl.dataset.mode, ops, 'old', oldEl.dataset.linkUrl);
+			}
+		}
+		if (newRaw) {
+			const newEl = currentPaths.get(newPath);
+			if (newEl && newEl.dataset.editing !== '1') {
+				newEl.innerHTML = renderDiffedInner(newEl.dataset.mode, ops, 'new', newEl.dataset.linkUrl);
+			}
+		}
+	}
+
+	// Private-use-area characters (invisible, and can't collide with text a
+	// user actually typed): pass untouched through escapeHtml() and every
+	// markdown regex below, then get swapped for real <span> tags once
+	// rendering is done.
+	const DIFF_OPEN = '';
+	const DIFF_CLOSE = '';
+
+	// Visible marker for a newline that begins or ends a diff run - see
+	// markDiffNewlines().
+	const NEWLINE_MARKER = '⏎';
+
+	// Reconstructs one side's text with DIFF_OPEN/DIFF_CLOSE bracketing the
+	// runs relevant to that side (removals for 'old', additions for 'new'),
+	// then renders it through the exact same plain/markdown pipeline normal
+	// pieces use, and only afterwards swaps the sentinels for real <span>
+	// tags. Diffing before markdown rendering (rather than diffing the
+	// rendered HTML) keeps **bold**/*italic*/etc. syntax intact instead of
+	// tokenizing it away.
+	function renderDiffedInner(mode, ops, /** @type {'old'|'new'} */ side, linkUrl) {
+		const relevant = side === 'old' ? 'remove' : 'add';
+		let marked = '';
+		let open = false;
+		ops.forEach((op) => {
+			if (op.type === 'equal') {
+				if (open) {
+					marked += DIFF_CLOSE;
+					open = false;
+				}
+				marked += op.text;
+			} else if (op.type === relevant) {
+				if (!open) {
+					marked += DIFF_OPEN;
+					open = true;
+				}
+				marked += op.text;
+			}
+		});
+		if (open) {
+			marked += DIFF_CLOSE;
+		}
+		marked = markDiffNewlines(marked);
+		const html = renderRawInner(mode, marked, linkUrl);
+		const spanClass = side === 'old' ? 'diff-word-removed' : 'diff-word-added';
+		return html.split(DIFF_OPEN).join(`<span class="${spanClass}">`).split(DIFF_CLOSE).join('</span>');
+	}
+
+	// A newline that begins or ends a diff run has no visible width of its
+	// own - the line just breaks the same as any unchanged line break would,
+	// so an added/removed blank line (or line-break-plus-word) can look like
+	// only the neighboring word changed. Stamping a return glyph right at
+	// that boundary (still followed by the real "\n", so the line still
+	// wraps where it always did) makes the line break itself visibly part of
+	// what changed.
+	function markDiffNewlines(/** @type {string} */ text) {
+		return text.replace(/\n/g, (match, offset, str) => {
+			const before = str.slice(offset - DIFF_OPEN.length, offset);
+			const after = str.slice(offset + 1, offset + 1 + DIFF_CLOSE.length);
+			return before === DIFF_OPEN || after === DIFF_CLOSE ? NEWLINE_MARKER + match : match;
+		});
+	}
+
+	// Splits on runs of whitespace so a "word" diff doesn't get thrown off by
+	// incidental spacing changes, while still keeping the spacing itself as
+	// its own token so it round-trips exactly when nothing changed around it.
+	function tokenize(/** @type {string} */ text) {
+		return text.split(/(\s+)/).filter((t) => t.length > 0);
+	}
+
+	// Classic LCS-backed diff, same shape as alignArrays()'s anchor pass but
+	// over word tokens instead of list items - see the block comment above
+	// applyDiffHighlight() for the general idea.
+	function diffTokens(oldTokens, newTokens) {
+		const n = oldTokens.length;
+		const m = newTokens.length;
+		const dp = [];
+		for (let i = 0; i <= n; i++) {
+			dp.push(new Array(m + 1).fill(0));
+		}
+		for (let i = n - 1; i >= 0; i--) {
+			for (let j = m - 1; j >= 0; j--) {
+				dp[i][j] = oldTokens[i] === newTokens[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+			}
+		}
+		const ops = [];
+		let i = 0;
+		let j = 0;
+		while (i < n && j < m) {
+			if (oldTokens[i] === newTokens[j]) {
+				ops.push({ type: 'equal', text: oldTokens[i] });
+				i++;
+				j++;
+			} else if (dp[i + 1][j] >= dp[i][j + 1]) {
+				ops.push({ type: 'remove', text: oldTokens[i] });
+				i++;
+			} else {
+				ops.push({ type: 'add', text: newTokens[j] });
+				j++;
+			}
+		}
+		while (i < n) {
+			ops.push({ type: 'remove', text: oldTokens[i] });
+			i++;
+		}
+		while (j < m) {
+			ops.push({ type: 'add', text: newTokens[j] });
+			j++;
+		}
+		return ops;
+	}
+
+	// Aligns two lists (embeds, or the fields within one embed) into ops:
+	// 'equal' (untouched anchor), 'modified' (same slot, different content),
+	// 'removed' (old-only), 'added' (new-only). See the block comment above
+	// applyDiffHighlight() for why this two-pass approach is needed instead
+	// of a plain index-by-index comparison.
+	function alignArrays(oldList, newList, deepEqualFn, identityFn) {
+		const anchors = lcsAnchors(oldList, newList, deepEqualFn);
+		const ops = [];
+
+		function pairGap(oldStart, oldEnd, newStart, newEnd) {
+			const oldSeg = [];
+			for (let i = oldStart; i < oldEnd; i++) {
+				oldSeg.push(i);
+			}
+			const newSeg = [];
+			for (let j = newStart; j < newEnd; j++) {
+				newSeg.push(j);
+			}
+			const usedNew = new Set();
+			const matchedOld = new Set();
+			oldSeg.forEach((oi) => {
+				const match = newSeg.find((nj) => !usedNew.has(nj) && identityFn(oldList[oi], newList[nj]));
+				if (match !== undefined) {
+					usedNew.add(match);
+					matchedOld.add(oi);
+					ops.push({ type: 'modified', oldIndex: oi, newIndex: match });
+				}
+			});
+			const leftoverOld = oldSeg.filter((oi) => !matchedOld.has(oi));
+			const leftoverNew = newSeg.filter((nj) => !usedNew.has(nj));
+			// identityFn can't help here (e.g. a title edit changes the very
+			// thing embedIdentity() keys on) - but if exactly one item is left
+			// unmatched on each side, there's no ambiguity about which pairs
+			// with which, so treat it as that same slot edited in place rather
+			// than a wholesale remove+add. With 2+ left on either side, which
+			// old item corresponds to which new one is a genuine guess, so
+			// don't - list them as separate removes/adds instead of risking a
+			// misleading pairing.
+			if (leftoverOld.length === 1 && leftoverNew.length === 1) {
+				ops.push({ type: 'modified', oldIndex: leftoverOld[0], newIndex: leftoverNew[0] });
+				return;
+			}
+			leftoverOld.forEach((oi) => ops.push({ type: 'removed', oldIndex: oi }));
+			leftoverNew.forEach((nj) => ops.push({ type: 'added', newIndex: nj }));
+		}
+
+		let oldPos = 0;
+		let newPos = 0;
+		anchors.forEach(({ oldIndex, newIndex }) => {
+			pairGap(oldPos, oldIndex, newPos, newIndex);
+			ops.push({ type: 'equal', oldIndex, newIndex });
+			oldPos = oldIndex + 1;
+			newPos = newIndex + 1;
+		});
+		pairGap(oldPos, oldList.length, newPos, newList.length);
+
+		return ops;
+	}
+
+	function lcsAnchors(oldList, newList, equalFn) {
+		const n = oldList.length;
+		const m = newList.length;
+		const dp = [];
+		for (let i = 0; i <= n; i++) {
+			dp.push(new Array(m + 1).fill(0));
+		}
+		for (let i = n - 1; i >= 0; i--) {
+			for (let j = m - 1; j >= 0; j--) {
+				dp[i][j] = equalFn(oldList[i], newList[j]) ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+			}
+		}
+		const anchors = [];
+		let i = 0;
+		let j = 0;
+		while (i < n && j < m) {
+			if (equalFn(oldList[i], newList[j])) {
+				anchors.push({ oldIndex: i, newIndex: j });
+				i++;
+				j++;
+			} else if (dp[i + 1][j] >= dp[i][j + 1]) {
+				i++;
+			} else {
+				j++;
+			}
+		}
+		return anchors;
+	}
+
+	function embedIdentity(a, b) {
+		const at = a && typeof a.title === 'string' ? a.title : '';
+		const bt = b && typeof b.title === 'string' ? b.title : '';
+		return !!at && at === bt;
+	}
+
+	function fieldIdentity(a, b) {
+		const an = a && typeof a.name === 'string' ? a.name : '';
+		const bn = b && typeof b.name === 'string' ? b.name : '';
+		return !!an && an === bn;
+	}
+
+	function deepEqual(a, b) {
+		if (a === b) {
+			return true;
+		}
+		if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) {
+			return false;
+		}
+		if (Array.isArray(a) !== Array.isArray(b)) {
+			return false;
+		}
+		if (Array.isArray(a)) {
+			return a.length === b.length && a.every((v, i) => deepEqual(v, b[i]));
+		}
+		const aKeys = Object.keys(a);
+		const bKeys = Object.keys(b);
+		return aKeys.length === bKeys.length && aKeys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && deepEqual(a[k], b[k]));
 	}
 
 	function updateDiffSourceAvailability() {
@@ -149,20 +527,24 @@
 	}
 
 	function renderOriginal() {
+		originalModel = null;
 		const entry = originalCache[diffSource];
 		if (!entry) {
 			hideOriginalError();
 			originalRootEl.innerHTML = buildLoadingHtml(diffSource);
+			applyDiffHighlight();
 			return;
 		}
 		if (entry.error) {
 			showOriginalError(entry.error);
 			originalRootEl.innerHTML = '';
+			applyDiffHighlight();
 			return;
 		}
 		if (!entry.text || !entry.text.trim()) {
 			showOriginalError('Empty file.');
 			originalRootEl.innerHTML = '';
+			applyDiffHighlight();
 			return;
 		}
 		let parsed;
@@ -171,6 +553,7 @@
 		} catch (e) {
 			showOriginalError('Invalid JSON: ' + e.message);
 			originalRootEl.innerHTML = '';
+			applyDiffHighlight();
 			return;
 		}
 		let normalized;
@@ -179,10 +562,13 @@
 		} catch (e) {
 			showOriginalError(e.message);
 			originalRootEl.innerHTML = '';
+			applyDiffHighlight();
 			return;
 		}
 		hideOriginalError();
+		originalModel = normalized;
 		originalRootEl.innerHTML = buildRootHtml(normalized, true);
+		applyDiffHighlight();
 	}
 
 	function buildLoadingHtml(/** @type {string} */ source) {
@@ -236,6 +622,7 @@
 		model = normalized;
 		rootEl.innerHTML = buildRootHtml(model, false);
 		applyViewOnlyState();
+		applyDiffHighlight();
 	}
 
 	function showError(text) {
@@ -370,6 +757,7 @@
 	function rerenderAndSchedule() {
 		rootEl.innerHTML = buildRootHtml(model, false);
 		applyViewOnlyState();
+		applyDiffHighlight();
 		scheduleWrite();
 	}
 
@@ -383,26 +771,36 @@
 		const raw = typeof rawValue === 'string' ? rawValue : '';
 		const inner = renderPieceInner(mode, raw, placeholder, opts.linkUrl);
 
+		const linkUrlAttr = opts.linkUrl ? ` data-link-url="${escapeAttr(opts.linkUrl)}"` : '';
+
 		if (opts.readOnly) {
 			// No data-bind/contenteditable/tabindex: this rendering is never
 			// wired to the edit event handlers (those only listen on the
 			// editable "current" pane), so it must not look or behave editable.
-			return `<${tag} class="${cls}" data-mode="${mode}">${inner}</${tag}>`;
+			// data-diff-path/data-placeholder/data-link-url are still included
+			// so the diff-highlight pass (which only reads, never edits) can
+			// pair this element up with its counterpart in the other pane and
+			// re-render it (clean or word-diffed) the same way it would the
+			// editable version.
+			return `<${tag} class="${cls}" data-mode="${mode}" data-diff-path="${escapeAttr(path)}" data-placeholder="${escapeAttr(placeholder)}"${linkUrlAttr}>${inner}</${tag}>`;
 		}
 
 		const multiline = opts.multiline ? ' data-multiline="1"' : '';
-		const linkUrl = opts.linkUrl ? ` data-link-url="${escapeAttr(opts.linkUrl)}"` : '';
-		return `<${tag} class="${cls}" data-bind="${escapeAttr(path)}" data-mode="${mode}" data-placeholder="${escapeAttr(placeholder)}"${multiline}${linkUrl} contenteditable="true" tabindex="0">${inner}</${tag}>`;
+		return `<${tag} class="${cls}" data-bind="${escapeAttr(path)}" data-diff-path="${escapeAttr(path)}" data-mode="${mode}" data-placeholder="${escapeAttr(placeholder)}"${multiline}${linkUrlAttr} contenteditable="true" tabindex="0">${inner}</${tag}>`;
+	}
+
+	function renderRawInner(mode, raw, linkUrl) {
+		if (mode === 'plain') {
+			return linkUrl ? `<a href="${escapeAttr(linkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(raw)}</a>` : escapeHtml(raw);
+		}
+		return renderMarkdown(raw, { allowHeadings: mode === 'md-heading' });
 	}
 
 	function renderPieceInner(mode, raw, placeholder, linkUrl) {
 		if (!raw) {
 			return `<span class="placeholder-text">${escapeHtml(placeholder)}</span>`;
 		}
-		if (mode === 'plain') {
-			return linkUrl ? `<a href="${escapeAttr(linkUrl)}" target="_blank" rel="noreferrer">${escapeHtml(raw)}</a>` : escapeHtml(raw);
-		}
-		return renderMarkdown(raw, { allowHeadings: mode === 'md-heading' });
+		return renderRawInner(mode, raw, linkUrl);
 	}
 
 	function renderEditablePieceInPlace(el, raw) {
@@ -453,10 +851,13 @@
 			// text it can't narrow itself to share a line with a float - a
 			// width:100% box that doesn't fit beside the float just gets pushed
 			// below it entirely, leaving a gap where the float still is. Only
-			// the description sits in the same container as the (floated)
-			// thumbnail, so match the width it leaves available there instead
-			// of letting it get pushed down.
-			const embedText = el.closest('.embed-text');
+			// the description sits beside the (floated) thumbnail, so only it
+			// needs to match the narrower width available there. Fields live
+			// in .embed-fields, which is `clear: both` (already below the
+			// float) - narrowing them too was leaving a wide dead gap in
+			// already-narrow inline fields.
+			const isDescription = el.classList.contains('embed-description');
+			const embedText = isDescription && el.closest('.embed-text');
 			const hasThumbnail = embedText && embedText.querySelector(':scope > .embed-thumbnail');
 			textarea.style.width = hasThumbnail ? 'calc(100% - 88px)' : '100%';
 
@@ -507,6 +908,7 @@
 		}
 		setRaw(model, path, raw);
 		renderEditablePieceInPlace(el, raw);
+		applyDiffHighlight();
 		scheduleWrite();
 	}
 
@@ -715,7 +1117,7 @@
 			: `<button type="button" class="embed-remove-btn" data-action="remove-embed" data-embed-index="${embedIndex}" title="Remove embed"><span class="field-btn field-btn-remove">-</span><span class="insert-label">Remove embed</span></button>`;
 
 		return `
-			<div class="embed-wrapper">
+			<div class="embed-wrapper" data-diff-unit="embed.${embedIndex}">
 				${removeBtnHtml}
 				${colorBar}
 				<div class="embed-content">
@@ -811,7 +1213,7 @@
 					<button type="button" class="field-btn field-btn-remove" data-action="remove-field" data-embed-index="${embedIndex}" data-field-index="${fieldIndex}" title="Remove field">-</button>
 				</div>`;
 		return `
-			<div class="embed-field ${cls}">
+			<div class="embed-field ${cls}" data-diff-unit="embed.${embedIndex}.field.${fieldIndex}">
 				<div class="embed-field-name-row">
 					${controlsHtml}
 					${nameHtml}

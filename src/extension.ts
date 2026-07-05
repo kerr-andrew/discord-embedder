@@ -259,6 +259,7 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
 			<div id="diff-options" class="diff-options" hidden>
 				<button type="button" class="diff-source-btn" data-source="commit" title="Compare against the last git commit">Last commit</button>
 				<button type="button" class="diff-source-btn" data-source="save" title="Compare against the last saved version">Last save</button>
+				<button type="button" id="diff-highlight-toggle" class="toolbar-btn" title="Highlight added and removed text between the two panes">Highlight changes</button>
 			</div>
 			<div class="toolbar-actions">
 				<button type="button" id="diff-toggle" class="toolbar-btn" title="Compare the current embed against an earlier version">Diff view</button>

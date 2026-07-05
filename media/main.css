@@ -161,6 +161,33 @@ body.view-only .embed-footer:has(.placeholder-text),
 	display: none;
 }
 
+/* Word-level diff: only the changed run of text within a piece is colored,
+   not the whole piece's box. */
+.diff-word-added {
+	color: #4fbb6f;
+}
+
+.diff-word-removed {
+	color: #f0575b;
+	text-decoration: line-through;
+	text-decoration-color: rgba(240, 87, 91, 0.85);
+}
+
+/* Whole-unit diff: an entire field or embed that exists on only one side -
+   one background fill over the whole block instead of separate boxes per
+   piece inside it. */
+.diff-unit-added {
+	background: rgba(59, 165, 92, 0.16);
+	box-shadow: 0 0 0 1px rgba(59, 165, 92, 0.5);
+	border-radius: 4px;
+}
+
+.diff-unit-removed {
+	background: rgba(218, 55, 60, 0.16);
+	box-shadow: 0 0 0 1px rgba(218, 55, 60, 0.5);
+	border-radius: 4px;
+}
+
 .error-banner {
 	background: #402225;
 	border: 1px solid #a12d2f;
