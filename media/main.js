@@ -59,7 +59,7 @@
 				diffSource = 'save';
 				saveState({ diffSource });
 			}
-			if (diffEnabled) {
+			if (needsOriginal()) {
 				if (diffSource === 'commit' && gitRepoAvailable) {
 					requestOriginal('commit');
 				}
@@ -69,7 +69,7 @@
 		} else if (msg && msg.type === 'originalContent') {
 			if (msg.source === 'save' || msg.source === 'commit') {
 				originalCache[msg.source] = { text: msg.text, error: msg.error };
-				if (diffEnabled && diffSource === msg.source) {
+				if (needsOriginal() && diffSource === msg.source) {
 					renderOriginal();
 				}
 			}
@@ -114,7 +114,8 @@
 			}
 			diffSource = /** @type {string} */ (btn.dataset.source);
 			saveState({ diffSource });
-			applyDiffState();
+			updateDiffSourceAvailability();
+			refreshOriginal();
 		});
 	});
 
@@ -122,7 +123,8 @@
 		diffHighlightEnabled = !diffHighlightEnabled;
 		saveState({ diffHighlightEnabled });
 		applyDiffHighlightToggleState();
-		applyDiffHighlight();
+		diffOptionsEl.hidden = !needsOriginal();
+		refreshOriginal();
 	});
 
 	function applyViewOnlyState() {
@@ -137,21 +139,34 @@
 	function applyDiffState() {
 		diffToggle.classList.toggle('active', diffEnabled);
 		diffToggle.textContent = diffEnabled ? 'Exit diff view' : 'Diff view';
-		diffOptionsEl.hidden = !diffEnabled;
 		originalPaneEl.hidden = !diffEnabled;
 		currentPaneLabelEl.hidden = !diffEnabled;
+		diffOptionsEl.hidden = !needsOriginal();
 		updateDiffSourceAvailability();
 		applyDiffHighlightToggleState();
-		if (diffEnabled) {
+		refreshOriginal();
+	}
+
+	function applyDiffHighlightToggleState() {
+		diffHighlightToggle.classList.toggle('active', diffHighlightEnabled);
+	}
+
+	// Highlighting the current pane against a baseline needs that baseline's
+	// content whether or not the split "original" pane is actually being
+	// shown - "Highlight changes" works standalone, without Diff view open,
+	// by comparing against whichever source (last save/last commit) is
+	// selected without displaying it side-by-side.
+	function needsOriginal() {
+		return diffEnabled || diffHighlightEnabled;
+	}
+
+	function refreshOriginal() {
+		if (needsOriginal()) {
 			requestOriginal(diffSource);
 			renderOriginal();
 		} else {
 			applyDiffHighlight();
 		}
-	}
-
-	function applyDiffHighlightToggleState() {
-		diffHighlightToggle.classList.toggle('active', diffHighlightEnabled);
 	}
 
 	// ---- diff highlighting ----
@@ -170,7 +185,7 @@
 	function applyDiffHighlight() {
 		clearDiffHighlights();
 
-		if (!diffEnabled || !diffHighlightEnabled || !model || !originalModel) {
+		if (!diffHighlightEnabled || !model || !originalModel) {
 			return;
 		}
 
