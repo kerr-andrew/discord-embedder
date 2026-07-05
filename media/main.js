@@ -189,11 +189,19 @@
 			return;
 		}
 
+		// With the split view open, the original pane already shows removed
+		// content, so the current pane only needs its own additions marked.
+		// Without it, the current pane is the only pane visible at all, so it
+		// has to show the full picture: removed text inline (red) alongside
+		// additions, and whole removed fields/embeds as "ghost" elements
+		// cloned from the (still off-screen) original-pane rendering.
+		const standalone = !diffEnabled;
+
 		const currentPaths = getDiffPathMap(rootEl);
 		const originalPaths = getDiffPathMap(originalRootEl);
 
-		diffLeafText('message.username', 'message.username', currentPaths, originalPaths);
-		diffLeafText('message.content', 'message.content', currentPaths, originalPaths);
+		diffLeafText('message.username', 'message.username', currentPaths, originalPaths, standalone);
+		diffLeafText('message.content', 'message.content', currentPaths, originalPaths, standalone);
 
 		const embedOps = alignArrays(originalModel.embeds || [], model.embeds || [], deepEqual, embedIdentity);
 		embedOps.forEach((op) => {
@@ -211,10 +219,10 @@
 
 			const oldI = op.oldIndex;
 			const newI = op.newIndex;
-			diffLeafText(`embed.${oldI}.title`, `embed.${newI}.title`, currentPaths, originalPaths);
-			diffLeafText(`embed.${oldI}.description`, `embed.${newI}.description`, currentPaths, originalPaths);
-			diffLeafText(`embed.${oldI}.author.name`, `embed.${newI}.author.name`, currentPaths, originalPaths);
-			diffLeafText(`embed.${oldI}.footer.text`, `embed.${newI}.footer.text`, currentPaths, originalPaths);
+			diffLeafText(`embed.${oldI}.title`, `embed.${newI}.title`, currentPaths, originalPaths, standalone);
+			diffLeafText(`embed.${oldI}.description`, `embed.${newI}.description`, currentPaths, originalPaths, standalone);
+			diffLeafText(`embed.${oldI}.author.name`, `embed.${newI}.author.name`, currentPaths, originalPaths, standalone);
+			diffLeafText(`embed.${oldI}.footer.text`, `embed.${newI}.footer.text`, currentPaths, originalPaths, standalone);
 
 			const oldFields = (originalModel.embeds[oldI] && originalModel.embeds[oldI].fields) || [];
 			const newFields = (model.embeds[newI] && model.embeds[newI].fields) || [];
@@ -225,11 +233,68 @@
 				} else if (fop.type === 'added') {
 					markDiffUnit(rootEl, `embed.${newI}.field.${fop.newIndex}`, 'diff-unit-added');
 				} else if (fop.type === 'modified') {
-					diffLeafText(`embed.${oldI}.field.${fop.oldIndex}.name`, `embed.${newI}.field.${fop.newIndex}.name`, currentPaths, originalPaths);
-					diffLeafText(`embed.${oldI}.field.${fop.oldIndex}.value`, `embed.${newI}.field.${fop.newIndex}.value`, currentPaths, originalPaths);
+					diffLeafText(`embed.${oldI}.field.${fop.oldIndex}.name`, `embed.${newI}.field.${fop.newIndex}.name`, currentPaths, originalPaths, standalone);
+					diffLeafText(`embed.${oldI}.field.${fop.oldIndex}.value`, `embed.${newI}.field.${fop.newIndex}.value`, currentPaths, originalPaths, standalone);
 				}
 			});
+
+			if (standalone) {
+				const fieldsParent = rootEl.querySelector(`[data-diff-unit="embed.${newI}"] .embed-fields`);
+				if (fieldsParent) {
+					insertGhosts(/** @type {HTMLElement} */ (fieldsParent), fieldOps, `embed.${newI}.field.`, `embed.${oldI}.field.`);
+				}
+			}
 		});
+
+		if (standalone) {
+			const embedsParent = rootEl.querySelector('.embeds-only, .message-body');
+			if (embedsParent) {
+				insertGhosts(/** @type {HTMLElement} */ (embedsParent), embedOps, 'embed.', 'embed.');
+			}
+		}
+	}
+
+	// Clones the (already-rendered, already diff-unit-removed-marked)
+	// original-pane element for each 'removed' op and splices it into the
+	// current pane at its place in the merged sequence - immediately after
+	// whichever real (kept/modified/added) item precedes it, or before the
+	// first real item if nothing precedes it, or appended into realParent if
+	// every item in the list was removed. Threading it this way (rather than
+	// by raw index) keeps ghosts in the right order even when several removed
+	// items are adjacent to each other or to the very start/end of the list.
+	function insertGhosts(/** @type {HTMLElement} */ realParent, ops, currentUnitPrefix, originalUnitPrefix) {
+		let prevReal = null;
+		let pendingBefore = [];
+
+		ops.forEach((op) => {
+			if (op.type === 'removed') {
+				const ghostSrc = originalRootEl.querySelector(`[data-diff-unit="${originalUnitPrefix}${op.oldIndex}"]`);
+				if (!ghostSrc) {
+					return;
+				}
+				const ghost = /** @type {HTMLElement} */ (ghostSrc.cloneNode(true));
+				// readonly-pane reuses the original pane's own read-only
+				// styling (disables the editable-hover look, collapses empty
+				// placeholders) now that the clone lives outside that pane.
+				ghost.classList.add('diff-ghost', 'readonly-pane');
+				if (prevReal) {
+					prevReal.insertAdjacentElement('afterend', ghost);
+					prevReal = ghost;
+				} else {
+					pendingBefore.push(ghost);
+				}
+				return;
+			}
+			const realEl = realParent.querySelector(`[data-diff-unit="${currentUnitPrefix}${op.newIndex}"]`);
+			if (!realEl) {
+				return;
+			}
+			pendingBefore.forEach((g) => realEl.parentNode.insertBefore(g, realEl));
+			pendingBefore = [];
+			prevReal = realEl;
+		});
+
+		pendingBefore.forEach((g) => realParent.appendChild(g));
 	}
 
 	// Undoes both kinds of mutation applyDiffHighlight() makes - the
@@ -238,6 +303,11 @@
 	// a previous model state behind (e.g. a field that used to be "modified"
 	// but is now identical again).
 	function clearDiffHighlights() {
+		// Ghosts are whole cloned nodes, not attribute/innerHTML tweaks on
+		// existing ones - remove them before resetLeafPieces() runs so it
+		// never mistakes a ghost's stale data-diff-path for a real piece of
+		// the current model.
+		rootEl.querySelectorAll('.diff-ghost').forEach((el) => el.remove());
 		resetLeafPieces(rootEl, model);
 		resetLeafPieces(originalRootEl, originalModel);
 		rootEl.querySelectorAll('.diff-unit-added').forEach((el) => el.classList.remove('diff-unit-added'));
@@ -274,12 +344,15 @@
 	}
 
 	// Renders a word-level diff of the value at a path into whichever side(s)
-	// actually have it: oldPath only exists while there's original text to
-	// mark red, newPath only while there's current text to mark green. A
-	// value that only exists on one side (pure add/remove of a still-existing
-	// field's text) degenerates naturally to "every token is a diff" on that
-	// side, so no separate case is needed for it.
-	function diffLeafText(oldPath, newPath, currentPaths, originalPaths) {
+	// need it. The original pane only ever shows what's gone (red), so it's
+	// skipped entirely when there's no old text. The current pane normally
+	// only shows what's new (green) - the split view's original pane is right
+	// there to show removals - but in standalone mode (no split view) it's the
+	// only pane visible at all, so mergeIntoCurrent asks it to show removed
+	// text too (red, inline) alongside additions, including when the value was
+	// cleared out entirely (newRaw empty) and there'd otherwise be nothing
+	// there to render at all.
+	function diffLeafText(oldPath, newPath, currentPaths, originalPaths, mergeIntoCurrent) {
 		const oldRaw = getRaw(originalModel, oldPath) || '';
 		const newRaw = getRaw(model, newPath) || '';
 		if (oldRaw === newRaw) {
@@ -289,13 +362,13 @@
 		if (oldRaw) {
 			const oldEl = originalPaths.get(oldPath);
 			if (oldEl && oldEl.dataset.editing !== '1') {
-				oldEl.innerHTML = renderDiffedInner(oldEl.dataset.mode, ops, 'old', oldEl.dataset.linkUrl);
+				oldEl.innerHTML = renderDiffedInner(oldEl.dataset.mode, ops, { showRemoved: true, showAdded: false }, oldEl.dataset.linkUrl);
 			}
 		}
-		if (newRaw) {
+		if (newRaw || mergeIntoCurrent) {
 			const newEl = currentPaths.get(newPath);
 			if (newEl && newEl.dataset.editing !== '1') {
-				newEl.innerHTML = renderDiffedInner(newEl.dataset.mode, ops, 'new', newEl.dataset.linkUrl);
+				newEl.innerHTML = renderDiffedInner(newEl.dataset.mode, ops, { showRemoved: mergeIntoCurrent, showAdded: true }, newEl.dataset.linkUrl);
 			}
 		}
 	}
@@ -303,61 +376,79 @@
 	// Private-use-area characters (invisible, and can't collide with text a
 	// user actually typed): pass untouched through escapeHtml() and every
 	// markdown regex below, then get swapped for real <span> tags once
-	// rendering is done.
-	const DIFF_OPEN = '';
-	const DIFF_CLOSE = '';
+	// rendering is done. Removed and added runs need distinct sentinel pairs
+	// (rather than one shared pair) so a single rendering pass can show both
+	// at once in standalone mode's merged view.
+	const DIFF_REMOVE_OPEN = '\ue000';
+	const DIFF_REMOVE_CLOSE = '\ue001';
+	const DIFF_ADD_OPEN = '\ue002';
+	const DIFF_ADD_CLOSE = '\ue003';
 
 	// Visible marker for a newline that begins or ends a diff run - see
 	// markDiffNewlines().
-	const NEWLINE_MARKER = '⏎';
+	const NEWLINE_MARKER = '\u23ce';
 
-	// Reconstructs one side's text with DIFF_OPEN/DIFF_CLOSE bracketing the
-	// runs relevant to that side (removals for 'old', additions for 'new'),
-	// then renders it through the exact same plain/markdown pipeline normal
-	// pieces use, and only afterwards swaps the sentinels for real <span>
-	// tags. Diffing before markdown rendering (rather than diffing the
-	// rendered HTML) keeps **bold**/*italic*/etc. syntax intact instead of
-	// tokenizing it away.
-	function renderDiffedInner(mode, ops, /** @type {'old'|'new'} */ side, linkUrl) {
-		const relevant = side === 'old' ? 'remove' : 'add';
+	// Reconstructs the text with sentinels bracketing whichever run types opts
+	// asks for (removals and/or additions), then renders it through the exact
+	// same plain/markdown pipeline normal pieces use, and only afterwards swaps
+	// the sentinels for real <span> tags. Diffing before markdown rendering
+	// (rather than diffing the rendered HTML) keeps **bold**/*italic*/etc.
+	// syntax intact instead of tokenizing it away.
+	function renderDiffedInner(mode, ops, /** @type {{showRemoved: boolean, showAdded: boolean}} */ opts, linkUrl) {
 		let marked = '';
-		let open = false;
+		let openType = null; // null | 'remove' | 'add'
 		ops.forEach((op) => {
-			if (op.type === 'equal') {
-				if (open) {
-					marked += DIFF_CLOSE;
-					open = false;
-				}
-				marked += op.text;
-			} else if (op.type === relevant) {
-				if (!open) {
-					marked += DIFF_OPEN;
-					open = true;
-				}
-				marked += op.text;
+			const included = op.type === 'equal' || (op.type === 'remove' && opts.showRemoved) || (op.type === 'add' && opts.showAdded);
+			if (!included) {
+				return;
 			}
+			const type = op.type === 'equal' ? null : op.type;
+			if (type !== openType) {
+				if (openType === 'remove') {
+					marked += DIFF_REMOVE_CLOSE;
+				} else if (openType === 'add') {
+					marked += DIFF_ADD_CLOSE;
+				}
+				if (type === 'remove') {
+					marked += DIFF_REMOVE_OPEN;
+				} else if (type === 'add') {
+					marked += DIFF_ADD_OPEN;
+				}
+				openType = type;
+			}
+			marked += op.text;
 		});
-		if (open) {
-			marked += DIFF_CLOSE;
+		if (openType === 'remove') {
+			marked += DIFF_REMOVE_CLOSE;
+		} else if (openType === 'add') {
+			marked += DIFF_ADD_CLOSE;
 		}
 		marked = markDiffNewlines(marked);
 		const html = renderRawInner(mode, marked, linkUrl);
-		const spanClass = side === 'old' ? 'diff-word-removed' : 'diff-word-added';
-		return html.split(DIFF_OPEN).join(`<span class="${spanClass}">`).split(DIFF_CLOSE).join('</span>');
+		return html
+			.split(DIFF_REMOVE_OPEN)
+			.join('<span class="diff-word-removed">')
+			.split(DIFF_REMOVE_CLOSE)
+			.join('</span>')
+			.split(DIFF_ADD_OPEN)
+			.join('<span class="diff-word-added">')
+			.split(DIFF_ADD_CLOSE)
+			.join('</span>');
 	}
 
 	// A newline that begins or ends a diff run has no visible width of its
 	// own - the line just breaks the same as any unchanged line break would,
 	// so an added/removed blank line (or line-break-plus-word) can look like
-	// only the neighboring word changed. Stamping a return glyph right at
-	// that boundary (still followed by the real "\n", so the line still
-	// wraps where it always did) makes the line break itself visibly part of
-	// what changed.
+	// only the neighboring word changed. Stamping a return glyph right at that
+	// boundary (still followed by the real "\n", so the line still wraps where
+	// it always did) makes the line break itself visibly part of what changed.
 	function markDiffNewlines(/** @type {string} */ text) {
+		const opens = [DIFF_REMOVE_OPEN, DIFF_ADD_OPEN];
+		const closes = [DIFF_REMOVE_CLOSE, DIFF_ADD_CLOSE];
 		return text.replace(/\n/g, (match, offset, str) => {
-			const before = str.slice(offset - DIFF_OPEN.length, offset);
-			const after = str.slice(offset + 1, offset + 1 + DIFF_CLOSE.length);
-			return before === DIFF_OPEN || after === DIFF_CLOSE ? NEWLINE_MARKER + match : match;
+			const before = str.slice(offset - 1, offset);
+			const after = str.slice(offset + 1, offset + 2);
+			return opens.includes(before) || closes.includes(after) ? NEWLINE_MARKER + match : match;
 		});
 	}
 
